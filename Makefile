@@ -1,19 +1,41 @@
-.PHONY: install run test backup list rotate
+.PHONY: install dev test lint docker clean backup list rotate stats help
 
+## Instalar dependencias
 install:
 	pip install -r requirements.txt --break-system-packages
 
-run:
-	python backup.py backup
+## Instalar en modo desarrollo (con virtualenv)
+dev:
+	python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
-backup:
-	python backup.py backup
-
-list:
-	python backup.py list
-
-rotate:
-	python backup.py rotate
-
+## Correr todos los tests
 test:
-	python -m pytest tests/ -v --tb=short
+	python3 -m pytest tests/ -v --tb=short
+
+## Ejecutar backup
+backup:
+	python3 backup.py backup
+
+## Listar backups existentes
+list:
+	python3 backup.py list
+
+## Solo rotar backups viejos
+rotate:
+	python3 backup.py rotate
+
+## Ver estadísticas de backups
+stats:
+	python3 backup.py stats --output table
+
+## Build Docker multi-stage
+docker:
+	docker build -t db-backup-notifier .
+
+## Limpiar artefactos
+clean:
+	rm -rf __pycache__ tests/__pycache__ .pytest_cache *.pyc
+
+## Mostrar ayuda
+help:
+	@grep -E '^##' Makefile | sed 's/## //'

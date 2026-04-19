@@ -3,32 +3,27 @@
 
 import gzip
 import json
-import logging
 import os
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from config import Config
+from logger import get_logger
 from notifier import TelegramNotifier
+from stats import get_stats
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    handlers=[logging.StreamHandler()]
-)
-logger = logging.getLogger(__name__)
+logger = get_logger('backup')
 
 
 def run_backup(config: Config, notifier: TelegramNotifier) -> bool:
     """Ejecuta el backup de la base de datos. Retorna True si exitoso."""
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
     db_name = config.db_name
     backup_filename = f"{db_name}_{timestamp}.sql.gz"
     backup_path = Path(config.backup_dir) / backup_filename
 
-    # Crear directorio de backups si no existe
     Path(config.backup_dir).mkdir(parents=True, exist_ok=True)
 
     logger.info(f"Iniciando backup: {db_name} → {backup_path}")
@@ -51,7 +46,8 @@ def run_backup(config: Config, notifier: TelegramNotifier) -> bool:
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            env=env
+            env=env,
+            timeout=config.pg_dump_timeout
         )
 
         if result.returncode != 0:
@@ -78,22 +74,31 @@ def run_backup(config: Config, notifier: TelegramNotifier) -> bool:
 
         return True
 
+    except subprocess.TimeoutExpired:
+        error_str = f"pg_dump excedió el tiempo límite de {config.pg_dump_timeout}s"
+        logger.error(error_str)
+        if backup_path.exists():
+            backup_path.unlink()
+        _notify_failure(notifier, db_name, config.db_host, error_str)
+        return False
+
     except Exception as e:
         error_str = str(e)
         logger.error(f"Backup FALLIDO: {error_str}")
-
         if backup_path.exists():
             backup_path.unlink()
-
-        msg = (
-            f"❌ *Backup FALLIDO*\n"
-            f"• DB: `{db_name}`\n"
-            f"• Error: `{error_str[:200]}`\n"
-            f"• Servidor: `{config.db_host}`"
-        )
-        notifier.send(msg)
-
+        _notify_failure(notifier, db_name, config.db_host, error_str)
         return False
+
+
+def _notify_failure(notifier: TelegramNotifier, db_name: str, db_host: str, error: str) -> None:
+    msg = (
+        f"❌ *Backup FALLIDO*\n"
+        f"• DB: `{db_name}`\n"
+        f"• Error: `{error[:200]}`\n"
+        f"• Servidor: `{db_host}`"
+    )
+    notifier.send(msg)
 
 
 def rotate_backups(config: Config) -> int:
@@ -114,7 +119,7 @@ def rotate_backups(config: Config) -> int:
     return len(to_remove)
 
 
-def list_backups(config: Config) -> list:
+def list_backups(config: Config, output_format: str = 'json') -> list:
     """Retorna lista de backups existentes con metadata."""
     backup_dir = Path(config.backup_dir)
     db_name = config.db_name
@@ -132,14 +137,32 @@ def list_backups(config: Config) -> list:
     return backups
 
 
+def _print_list_table(backups: list) -> None:
+    if not backups:
+        print("No hay backups disponibles.")
+        return
+    header = f"{'Nombre':<45} {'Tamaño (MB)':>12} {'Fecha':>25}"
+    print(header)
+    print('-' * len(header))
+    for b in backups:
+        print(f"{b['name']:<45} {b['size_mb']:>12.2f} {b['mtime']:>25}")
+
+
 if __name__ == '__main__':
     import argparse
 
     parser = argparse.ArgumentParser(description='PostgreSQL Backup Notifier')
     parser.add_argument('action', nargs='?', default='backup',
-                        choices=['backup', 'list', 'rotate'],
+                        choices=['backup', 'list', 'rotate', 'stats'],
                         help='Acción a realizar (default: backup)')
+    parser.add_argument('--output', '-o', choices=['json', 'table'], default='json',
+                        help='Formato de salida para list/stats (default: json)')
+    parser.add_argument('--verbose', '-v', action='store_true',
+                        help='Mostrar output detallado')
     args = parser.parse_args()
+
+    if args.verbose:
+        os.environ['LOG_LEVEL'] = 'DEBUG'
 
     config = Config()
     errors = config.validate()
@@ -153,9 +176,29 @@ if __name__ == '__main__':
     if args.action == 'backup':
         success = run_backup(config, notifier)
         sys.exit(0 if success else 1)
+
     elif args.action == 'list':
         backups = list_backups(config)
-        print(json.dumps(backups, indent=2))
+        if args.output == 'table':
+            _print_list_table(backups)
+        else:
+            print(json.dumps(backups, indent=2))
+
     elif args.action == 'rotate':
         removed = rotate_backups(config)
-        print(f"Rotados {removed} backups viejos")
+        if args.output == 'json':
+            print(json.dumps({'removed': removed}))
+        else:
+            print(f"Rotados {removed} backups viejos")
+
+    elif args.action == 'stats':
+        data = get_stats(config)
+        if args.output == 'table':
+            print(f"Backups: {data['count']} / {data['retention_policy']}")
+            print(f"Tamaño total: {data['total_size_mb']:.2f} MB")
+            if data['count']:
+                print(f"Tamaño promedio: {data['avg_size_mb']:.2f} MB")
+                print(f"Más antiguo: {data['oldest']}")
+                print(f"Más reciente: {data['newest']}")
+        else:
+            print(json.dumps(data, indent=2))
