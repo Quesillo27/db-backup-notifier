@@ -25,6 +25,8 @@ tests/          — Tests unitarios con mocks (sin acceso real a DB/Telegram)
 
 `gzip` es universalmente disponible sin dependencias adicionales. La diferencia de compresión vs. zstd no justifica agregar una dependencia del sistema operativo que puede no estar disponible en todos los entornos.
 
+Desde `v1.1.1`, el dump se escribe primero a un archivo temporal local y luego se comprime por chunks. Esto evita retener todo el SQL en memoria, a costa de usar espacio temporal adicional durante la ejecución.
+
 ### Por qué SQLite no aplica aquí
 
 Este servicio no persiste estado propio — los backups son el estado. No necesita base de datos propia.
@@ -39,8 +41,8 @@ Un timeout de pg_dump generalmente indica un problema real (DB no disponible, re
 backup.py main
   → Config.validate()       # fail fast si hay configuración inválida
   → run_backup()
-      → subprocess.run(pg_dump, timeout=PG_DUMP_TIMEOUT)
-      → gzip.open(backup_path, 'wb')
+      → subprocess.run(pg_dump, stdout=tempfile, timeout=PG_DUMP_TIMEOUT)
+      → _compress_to_gzip(tempfile, backup_path)
       → rotate_backups()
       → TelegramNotifier.send()   # con reintentos
 ```

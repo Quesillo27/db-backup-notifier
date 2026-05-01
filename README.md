@@ -7,6 +7,8 @@
 
 Script Python que hace backups automáticos de PostgreSQL, los comprime con gzip, rota los archivos antiguos según política de retención, y notifica el resultado via Telegram. Diseñado para ejecutarse como cron job en un VPS.
 
+La creación del dump ahora usa un archivo temporal local y compresión por chunks, evitando cargar todo `pg_dump` en memoria en bases de datos grandes.
+
 ## Instalación en 3 comandos
 
 ```bash
@@ -115,7 +117,7 @@ docker run --rm \
 - Soporte para múltiples bases de datos en un solo run (`DB_NAMES=db1,db2`)
 - Subida a S3/GCS como destino adicional
 - Comando `restore` para restauración guiada
-- Verificación de integridad del backup tras la creación
+- Verificación restaurable del backup tras la creación (`psql --single-transaction` o restore dry-run)
 
 ## Contribuir
 

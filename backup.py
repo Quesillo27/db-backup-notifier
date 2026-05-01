@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -15,6 +16,14 @@ from notifier import TelegramNotifier
 from stats import get_stats
 
 logger = get_logger('backup')
+_COPY_CHUNK_SIZE = 1024 * 1024
+
+
+def _compress_to_gzip(source_path: Path, destination_path: Path) -> None:
+    """Comprime un dump SQL temporal a gzip en chunks para evitar picos de memoria."""
+    with source_path.open('rb') as source_file, gzip.open(destination_path, 'wb') as gz_file:
+        while chunk := source_file.read(_COPY_CHUNK_SIZE):
+            gz_file.write(chunk)
 
 
 def run_backup(config: Config, notifier: TelegramNotifier) -> bool:
@@ -23,6 +32,7 @@ def run_backup(config: Config, notifier: TelegramNotifier) -> bool:
     db_name = config.db_name
     backup_filename = f"{db_name}_{timestamp}.sql.gz"
     backup_path = Path(config.backup_dir) / backup_filename
+    raw_backup_path = None
 
     Path(config.backup_dir).mkdir(parents=True, exist_ok=True)
 
@@ -42,20 +52,31 @@ def run_backup(config: Config, notifier: TelegramNotifier) -> bool:
             '-Fp',
         ]
 
-        result = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-            timeout=config.pg_dump_timeout
+        raw_backup_fd, raw_backup_name = tempfile.mkstemp(
+            prefix=f"{db_name}_{timestamp}_",
+            suffix='.sql',
+            dir=config.backup_dir
         )
+        os.close(raw_backup_fd)
+        raw_backup_path = Path(raw_backup_name)
+
+        with raw_backup_path.open('wb') as raw_backup_file:
+            result = subprocess.run(
+                cmd,
+                stdout=raw_backup_file,
+                stderr=subprocess.PIPE,
+                env=env,
+                timeout=config.pg_dump_timeout
+            )
 
         if result.returncode != 0:
             error_msg = result.stderr.decode('utf-8', errors='replace')
             raise RuntimeError(f"pg_dump falló (exit {result.returncode}): {error_msg}")
 
-        with gzip.open(backup_path, 'wb') as gz_file:
-            gz_file.write(result.stdout)
+        if raw_backup_path.stat().st_size == 0:
+            raise RuntimeError('pg_dump generó un backup vacío')
+
+        _compress_to_gzip(raw_backup_path, backup_path)
 
         size_mb = backup_path.stat().st_size / (1024 * 1024)
         logger.info(f"Backup completado: {backup_filename} ({size_mb:.2f} MB)")
@@ -89,6 +110,9 @@ def run_backup(config: Config, notifier: TelegramNotifier) -> bool:
             backup_path.unlink()
         _notify_failure(notifier, db_name, config.db_host, error_str)
         return False
+    finally:
+        if raw_backup_path and raw_backup_path.exists():
+            raw_backup_path.unlink()
 
 
 def _notify_failure(notifier: TelegramNotifier, db_name: str, db_host: str, error: str) -> None:

@@ -3,7 +3,7 @@ import gzip
 import subprocess
 import pytest
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 from backup import rotate_backups, list_backups, run_backup, _notify_failure, _print_list_table
 
@@ -27,6 +27,15 @@ def create_fake_backup(directory, db_name, timestamp):
     with gzip.open(path, 'wb') as f:
         f.write(b"-- fake sql dump")
     return path
+
+
+def mock_successful_dump(mock_run, content=b"-- SQL dump"):
+    def _write_dump(*args, **kwargs):
+        kwargs['stdout'].write(content)
+        kwargs['stdout'].flush()
+        return MagicMock(returncode=0, stderr=b"")
+
+    mock_run.side_effect = _write_dump
 
 
 @pytest.fixture
@@ -134,14 +143,14 @@ class TestRunBackup:
     @patch('backup.subprocess.run')
     def test_success_returns_true(self, mock_run, config):
         notifier = MagicMock()
-        mock_run.return_value = MagicMock(returncode=0, stdout=b"-- SQL dump", stderr=b"")
+        mock_successful_dump(mock_run)
         assert run_backup(config, notifier) is True
         assert len(list(Path(config.backup_dir).glob("*.sql.gz"))) == 1
 
     @patch('backup.subprocess.run')
     def test_success_notifies_with_checkmark(self, mock_run, config):
         notifier = MagicMock()
-        mock_run.return_value = MagicMock(returncode=0, stdout=b"-- SQL dump", stderr=b"")
+        mock_successful_dump(mock_run)
         run_backup(config, notifier)
         notifier.send.assert_called_once()
         assert '✅' in notifier.send.call_args[0][0]
@@ -171,7 +180,7 @@ class TestRunBackup:
     def test_notify_on_success_false_skips_notification(self, mock_run, config):
         config.notify_on_success = False
         notifier = MagicMock()
-        mock_run.return_value = MagicMock(returncode=0, stdout=b"-- SQL", stderr=b"")
+        mock_successful_dump(mock_run, b"-- SQL")
         run_backup(config, notifier)
         notifier.send.assert_not_called()
 
@@ -179,7 +188,7 @@ class TestRunBackup:
     def test_creates_backup_dir_if_missing(self, mock_run, tmp_path, config):
         config.backup_dir = str(tmp_path / 'nested' / 'deep')
         notifier = MagicMock()
-        mock_run.return_value = MagicMock(returncode=0, stdout=b"-- SQL", stderr=b"")
+        mock_successful_dump(mock_run, b"-- SQL")
         result = run_backup(config, notifier)
         assert result is True
         assert Path(config.backup_dir).is_dir()
@@ -187,13 +196,20 @@ class TestRunBackup:
     @patch('backup.subprocess.run')
     def test_backup_file_is_valid_gzip(self, mock_run, config):
         notifier = MagicMock()
-        mock_run.return_value = MagicMock(returncode=0, stdout=b"-- SQL dump content", stderr=b"")
+        mock_successful_dump(mock_run, b"-- SQL dump content")
         run_backup(config, notifier)
         files = list(Path(config.backup_dir).glob("*.sql.gz"))
         assert len(files) == 1
         with gzip.open(files[0], 'rb') as f:
             content = f.read()
         assert content == b"-- SQL dump content"
+
+    @patch('backup.subprocess.run')
+    def test_success_removes_temporary_sql_dump(self, mock_run, config):
+        notifier = MagicMock()
+        mock_successful_dump(mock_run, b"-- SQL dump content")
+        run_backup(config, notifier)
+        assert list(Path(config.backup_dir).glob("*.sql")) == []
 
     @patch('backup.subprocess.run')
     def test_timeout_returns_false(self, mock_run, config):
@@ -213,23 +229,33 @@ class TestRunBackup:
     @patch('backup.subprocess.run')
     def test_pg_dump_called_with_correct_args(self, mock_run, config):
         notifier = MagicMock()
-        mock_run.return_value = MagicMock(returncode=0, stdout=b"-- SQL", stderr=b"")
+        mock_successful_dump(mock_run, b"-- SQL")
         run_backup(config, notifier)
         cmd = mock_run.call_args[0][0]
+        call_kwargs = mock_run.call_args[1]
         assert 'pg_dump' in cmd
         assert '-h' in cmd
         assert config.db_host in cmd
         assert '-U' in cmd
         assert config.db_user in cmd
+        assert call_kwargs['stderr'] == subprocess.PIPE
 
     @patch('backup.subprocess.run')
     def test_pg_dump_uses_timeout_from_config(self, mock_run, config):
         config.pg_dump_timeout = 120
         notifier = MagicMock()
-        mock_run.return_value = MagicMock(returncode=0, stdout=b"-- SQL", stderr=b"")
+        mock_successful_dump(mock_run, b"-- SQL")
         run_backup(config, notifier)
         call_kwargs = mock_run.call_args[1]
         assert call_kwargs['timeout'] == 120
+
+    @patch('backup.subprocess.run')
+    def test_empty_dump_is_treated_as_failure(self, mock_run, config):
+        notifier = MagicMock()
+        mock_successful_dump(mock_run, b"")
+        assert run_backup(config, notifier) is False
+        notifier.send.assert_called_once()
+        assert 'vacío' in notifier.send.call_args[0][0]
 
 
 # ── _notify_failure ───────────────────────────────────────────────────────────

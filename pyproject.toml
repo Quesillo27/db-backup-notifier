@@ -4,7 +4,7 @@ build-backend = "setuptools.backends.legacy:build"
 
 [project]
 name = "db-backup-notifier"
-version = "1.1.0"
+version = "1.1.1"
 description = "Backup automático de PostgreSQL con notificación Telegram"
 readme = "README.md"
 license = {text = "MIT"}

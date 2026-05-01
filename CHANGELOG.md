@@ -2,6 +2,15 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.0.0/).
 
+## [1.1.1] — 2026-05-01
+
+### Mejorado
+- `run_backup()` ya no captura todo `pg_dump` en RAM: escribe primero a un dump temporal y luego comprime en chunks a `.sql.gz`, reduciendo el pico de memoria en bases de datos grandes.
+- Si `pg_dump` genera un dump vacío, ahora se trata como fallo controlado para evitar publicar backups aparentemente exitosos pero inútiles.
+
+### Tests
+- 70 → 72 tests (+2): cobertura para limpieza del dump temporal y rechazo de dumps vacíos.
+
 ## [1.1.0] — 2026-04-19
 
 ### Añadido
